@@ -1,66 +1,58 @@
-# WordPress + MySQL Master-Slave Deployment via Ansible  
+
+---
+
+# HW3: Monitoring Docker Cluster with Grafana, Prometheus, cAdvisor
+
 ### Автор: Eduard Bodreev
 
 ## Описание
 
-Проект разворачивает мультиконтейнерное приложение с WordPress и MySQL (в режиме Master-Slave репликации) с помощью Ansible и Docker:  
-Также реализованы тестовые сценарии проверки репликации и очистка данных после теста.
+Этот проект автоматически разворачивает систему мониторинга Docker-контейнеров с помощью Ansible, Docker, Prometheus, Grafana и cAdvisor.
+После выполнения playbook'а:
 
-Все действия выполняются на удалённом сервере с доступом по SSH.
+* Grafana доступна по порту `3000`
+* Prometheus — на `9090`
+* cAdvisor — на `8180`
+* Автоматически добавляется Grafana-дэшборд и подключается источник Prometheus
+* Создаётся алерт при превышении CPU > 2.5% на контейнере `db-master`
 
 ---
 
 ## Требования
 
-- Установленный Ansible (на вашей машине)
-- SSH-доступ к серверу с root-доступом или sudo без пароля
-- Docker и docker-compose на удалённом сервере (автоматически устанавливаются)
-- Настроенный `inventory.ini` с IP-адресом сервера
+* Установленный Ansible (на вашей локальной машине)
+* SSH-доступ к удалённому серверу
+* Docker уже установлен или будет установлен playbook'ом
 
 ---
 
-## Содержимое
+1. Склонировать репозиторий:
 
-- `playbook2.yml` - основной плейбук: развертывание MySQL Master-Slave и WordPress
-- `playbook2test.yml` - тест репликации: создание БД и таблицы, вставка и проверка данных
-- `playbook2aftertest.yml` - удаление тестовых данных и проверка синхронизации
-- `inventory.ini` - список серверов
-- `docker-compose.yml` - генерируется автоматически на сервере
+   ```bash
+   git clone https://github.com/Eduard-Bodreev/IFMO_DistributedComputing_for_DevOps
+   ```
+
+2. Отредактировать `inventory.ini`, указав IP-адрес и пользователя удалённого сервера:
+
+   ```
+   [all]
+   158.160.137.228 ansible_user=ubuntu
+   ```
+
+3. Запустить playbook:
+
+   ```bash
+   ansible-playbook -i inventory.ini playbook3.yml
+   ```
 
 ---
+* Зайти на `http://<IP>:3000`
+* Логин/пароль: `admin / adminpass`
+* Перейти в Dashboards → Docker monitoring
+* Убедиться, что отображаются метрики CPU, Memory, Network
 
-## Установка и запуск
+### Алерты:
 
-### 1. Клонировать репозиторий
-```bash
-git clone https://github.com/Eduard-Bodreev/IFMO_DistributedComputing_for_DevOps.git
-cd IFMO_DistributedComputing_for_DevOps
-git checkout HW2
-```
-### 2. Указать сервер в `inventory.ini`
-
-```ini
-[wordpress_server]
-<IP_сервера> ansible_user=<пользователь>
-```
-
-### 3. Запустить основной плейбук
-
-```bash
-ansible-playbook -i inventory.ini playbook2.yml
-```
-
-### 4. Проверить корректность репликации
-
-```bash
-ansible-playbook -i inventory.ini playbook2test.yml
-```
-
-Плейбук создаёт таблицу, вставляет данные и проверяет, что данные из мастера появились в реплике даже после выключения мастера.
-
-
-### 5. Удалить тестовые записи и убедиться, что они исчезли и на реплике
-
-```bash
-ansible-playbook -i inventory.ini playbook2aftertest.yml
-```
+* Зайти в `Alerting > Alert rules`
+* Убедиться, что есть правило: **CPU > 2.5%**
+* Состояние можно проверить вручную, нагружая контейнер
