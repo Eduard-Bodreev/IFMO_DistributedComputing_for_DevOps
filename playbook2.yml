@@ -1,5 +1,4 @@
----
-- name: Deploy WordPress with MySQL Master-Slave replication in Docker
+- name: MySQL replica with Docker (cleaned and corrected)
   hosts: wordpress_server
   become: true
 
@@ -13,45 +12,36 @@
     wordpress_port: 8080
 
   tasks:
-    - name: Ensure Docker is installed
-      apt:
-        name: docker.io
-        state: present
-        update_cache: yes
+    - name: Stop all docker containers
+      community.docker.docker_compose_v2:
+        project_src: /opt/wordpress
+        state: absent
 
-    - name: Install docker-compose (v2) manually from GitHub
-      get_url:
-        url: https://github.com/docker/compose/releases/download/v2.24.6/docker-compose-linux-x86_64
-        dest: /usr/local/bin/docker-compose
-        mode: '0755'
-
-    - name: Ensure Docker is started
-      service:
-        name: docker
-        state: started
-        enabled: true
-
-    - name: Create project directory
+    - name: Create WordPress project directory
       file:
         path: /opt/wordpress
         state: directory
 
-    - name: Copy docker-compose file with MySQL replication and WordPress
+    - name: Copy docker-compose file
       copy:
         dest: /opt/wordpress/docker-compose.yml
         content: |
           version: '3.8'
           services:
             db-master:
-              image: mysql:5.7
               container_name: wordpress_db-master
+              image: mysql:5.7
+              restart: always
               environment:
                 MYSQL_ROOT_PASSWORD: {{ db_root_password }}
-              command: --server-id=1 --log-bin=mysql-bin
               volumes:
                 - db_master_data:/var/lib/mysql
               ports:
                 - "3306:3306"
+              command: >
+                --server-id=1
+                --log-bin=mysql-bin
+                --gtid-mode=OFF
               healthcheck:
                 test: ["CMD", "mysqladmin", "ping", "-uroot", "-p{{ db_root_password }}"]
                 interval: 10s
@@ -59,26 +49,32 @@
                 retries: 5
 
             db-replica:
-              image: mysql:5.7
               container_name: wordpress_db-replica
+              image: mysql:5.7
+              restart: always
               environment:
                 MYSQL_ROOT_PASSWORD: {{ db_root_password }}
-              command: --server-id=2 --relay-log=relay-log --log-bin=mysql-bin --read-only=1
-              depends_on:
-                - db-master
-              ports:
-                - "3307:3306"
               volumes:
                 - db_replica_data:/var/lib/mysql
+              depends_on:
+                - db-master
+              command: >
+                --server-id=2
+                --relay-log=relay-log
+                --log-bin=mysql-bin
+                --read-only=1
               healthcheck:
                 test: ["CMD", "mysqladmin", "ping", "-uroot", "-p{{ db_root_password }}"]
                 interval: 10s
                 timeout: 5s
                 retries: 5
+              ports:
+                - "3307:3306"
 
             wordpress:
-              image: wordpress:latest
               container_name: wordpress
+              image: wordpress:latest
+              restart: always
               depends_on:
                 - db-master
               ports:
@@ -96,108 +92,23 @@
             db_replica_data:
             wordpress_data:
 
-    - name: Start Docker containers
-      command: /usr/local/bin/docker-compose -f /opt/wordpress/docker-compose.yml up -d
+    - name: Start all containers
+      community.docker.docker_compose_v2:
+        project_src: /opt/wordpress
+        state: present
 
-    - name: Wait for master container to be healthy
+    - name: Wait for db-master to become healthy
       community.docker.docker_container_info:
         name: wordpress_db-master
       register: master_info
-      until: master_info.container.State.Health.Status == "healthy"
+      until: master_info.container.State.Health is defined and master_info.container.State.Health.Status == "healthy"
       retries: 10
       delay: 5
 
-    - name: Wait for replica container to be healthy
+    - name: Wait for db-replica to become healthy
       community.docker.docker_container_info:
         name: wordpress_db-replica
       register: replica_info
-      until: replica_info.container.State.Health.Status == "healthy"
+      until: replica_info.container.State.Health is defined and replica_info.container.State.Health.Status == "healthy"
       retries: 10
       delay: 5
-
-    - name: Install PyMySQL via apt
-      apt:
-        name: python3-pymysql
-        state: present
-        update_cache: yes
-
-    - name: Create replication user
-      community.mysql.mysql_query:
-        login_host: 127.0.0.1
-        login_user: root
-        login_password: "{{ db_root_password }}"
-        login_port: 3306
-        query: "CREATE USER IF NOT EXISTS '{{ replication_user }}'@'%' IDENTIFIED BY '{{ replication_pass }}';"
-
-    - name: Grant replication privileges
-      community.mysql.mysql_query:
-        login_host: 127.0.0.1
-        login_user: root
-        login_password: "{{ db_root_password }}"
-        login_port: 3306
-        query: "GRANT REPLICATION SLAVE ON *.* TO '{{ replication_user }}'@'%';"
-
-    - name: Flush privileges
-      community.mysql.mysql_query:
-        login_host: 127.0.0.1
-        login_user: root
-        login_password: "{{ db_root_password }}"
-        login_port: 3306
-        query: "FLUSH PRIVILEGES;"
-
-    - name: Get master status
-      community.mysql.mysql_query:
-        login_host: 127.0.0.1
-        login_user: root
-        login_password: "{{ db_root_password }}"
-        login_port: 3306
-        query: "SHOW MASTER STATUS"
-      register: master_status
-
-    - name: Extract log position
-      set_fact:
-        master_log_file: "{{ master_status.query_result[0][0].File }}"
-        master_log_pos: "{{ master_status.query_result[0][0].Position | int }}"
-
-    - name: Stop replica slave
-      community.mysql.mysql_query:
-        login_host: 127.0.0.1
-        login_user: root
-        login_password: "{{ db_root_password }}"
-        login_port: 3307
-        query: "STOP SLAVE;"
-
-    - name: Configure replica master connection
-      community.mysql.mysql_query:
-        login_host: 127.0.0.1
-        login_user: root
-        login_password: "{{ db_root_password }}"
-        login_port: 3307
-        query: >
-          CHANGE MASTER TO
-            MASTER_HOST='db-master',
-            MASTER_USER='{{ replication_user }}',
-            MASTER_PASSWORD='{{ replication_pass }}',
-            MASTER_LOG_FILE='{{ master_log_file }}',
-            MASTER_LOG_POS={{ master_log_pos }};
-
-    - name: Start replica slave
-      community.mysql.mysql_query:
-        login_host: 127.0.0.1
-        login_user: root
-        login_password: "{{ db_root_password }}"
-        login_port: 3307
-        query: "START SLAVE;"
-
-    - name: Confirm replication
-      community.mysql.mysql_query:
-        login_host: 127.0.0.1
-        login_user: root
-        login_password: "{{ db_root_password }}"
-        login_port: 3307
-        query: "SHOW SLAVE STATUS"
-      register: replica_status
-
-    - name: Show replication state
-      debug:
-        var: replica_status.query_result
