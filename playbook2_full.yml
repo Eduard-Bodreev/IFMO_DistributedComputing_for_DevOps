@@ -1,0 +1,284 @@
+---
+- name: Lab2 - Full Setup and Test of MySQL Replication with WordPress
+  hosts: wordpress_server
+  become: true
+
+  vars:
+    db_root_password: root_pass
+    replication_user: replicauser
+    replication_pass: replicapassword
+
+  tasks:
+    # 1. Установка Docker
+    - name: Install required base packages
+      apt:
+        name: ['apt-transport-https', 'ca-certificates', 'curl', 'gnupg-agent', 'software-properties-common']
+        state: present
+        update_cache: yes
+
+    - name: Add Docker GPG key
+      apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+
+    - name: Add Docker APT repository
+      apt_repository:
+        repo: deb [arch=amd64] https://download.docker.com/linux/ubuntu focal stable
+        state: present
+        update_cache: yes
+
+    - name: Install Docker CE and Compose plugin
+      apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-compose-plugin
+        state: present
+
+    - name: Ensure Docker service is running
+      service:
+        name: docker
+        state: started
+        enabled: true
+
+    # 2. WordPress + MySQL через docker-compose
+    - name: Create WordPress project directory
+      file:
+        path: /opt/wordpress
+        state: directory
+
+    - name: Copy docker-compose file
+      copy:
+        dest: /opt/wordpress/docker-compose.yml
+        content: |
+          version: '3.8'
+          services:
+            db-master:
+              container_name: wordpress_db-master
+              image: mysql:5.7
+              restart: always
+              environment:
+                MYSQL_ROOT_PASSWORD: {{ db_root_password }}
+              volumes:
+                - db_master_data:/var/lib/mysql
+              ports:
+                - "3306:3306"
+              command: >
+                --server-id=1
+                --log-bin=mysql-bin
+                --gtid-mode=OFF
+                --enforce-gtid-consistency=OFF
+              healthcheck:
+                test: ["CMD", "mysqladmin", "ping", "-uroot", "-p{{ db_root_password }}"]
+                interval: 10s
+                timeout: 5s
+                retries: 5
+
+            db-replica:
+              container_name: wordpress_db-replica
+              image: mysql:5.7
+              restart: always
+              environment:
+                MYSQL_ROOT_PASSWORD: {{ db_root_password }}
+              volumes:
+                - db_replica_data:/var/lib/mysql
+              ports:
+                - "3307:3306"
+              command: >
+                --server-id=2
+                --relay-log=relay-log
+              healthcheck:
+                test: ["CMD", "mysqladmin", "ping", "-uroot", "-p{{ db_root_password }}"]
+                interval: 10s
+                timeout: 5s
+                retries: 5
+
+          volumes:
+            db_master_data:
+            db_replica_data:
+
+    - name: Start all containers
+      community.docker.docker_compose:
+        project_src: /opt/wordpress
+        state: present
+        remove_orphans: true
+
+    - name: Wait for db-master to become healthy
+      community.docker.docker_container_info:
+        name: wordpress_db-master
+      register: master_info
+      until: master_info.container.State.Health.Status == 'healthy'
+      retries: 20
+      delay: 5
+
+    - name: Wait for db-replica to become healthy
+      community.docker.docker_container_info:
+        name: wordpress_db-replica
+      register: replica_info
+      until: replica_info.container.State.Health.Status == 'healthy'
+      retries: 20
+      delay: 5
+
+    # 3. Настройка репликации
+    - name: Wait until master MySQL is ready
+      community.mysql.mysql_info:
+        login_user: root
+        login_password: "{{ db_root_password }}"
+        login_host: 127.0.0.1
+        login_port: 3306
+      register: mysql_ready
+      retries: 10
+      delay: 5
+      until: mysql_ready is succeeded
+
+    - name: Create replication user
+      community.mysql.mysql_user:
+        name: "{{ replication_user }}"
+        password: "{{ replication_pass }}"
+        priv: "*.*:REPLICATION SLAVE"
+        host: '%'
+        login_user: root
+        login_password: "{{ db_root_password }}"
+        login_host: 127.0.0.1
+        login_port: 3306
+        state: present
+
+    - name: Flush privileges
+      community.mysql.mysql_query:
+        login_user: root
+        login_password: "{{ db_root_password }}"
+        login_host: 127.0.0.1
+        login_port: 3306
+        query: FLUSH PRIVILEGES;
+
+    - name: Get master log file and position
+      community.mysql.mysql_query:
+        login_user: root
+        login_password: "{{ db_root_password }}"
+        login_host: 127.0.0.1
+        login_port: 3306
+        query: SHOW MASTER STATUS;
+      register: master_status
+
+    - name: Extract log file and position
+      set_fact:
+        log_file: "{{ master_status.query_result[0][0].File }}"
+        log_pos: "{{ master_status.query_result[0][0].Position }}"
+
+    - name: Stop slave on replica
+      community.mysql.mysql_query:
+        login_user: root
+        login_password: "{{ db_root_password }}"
+        login_host: 127.0.0.1
+        login_port: 3307
+        query: STOP SLAVE;
+
+    - name: Configure replica connection to master
+      community.mysql.mysql_query:
+        login_user: root
+        login_password: "{{ db_root_password }}"
+        login_host: 127.0.0.1
+        login_port: 3307
+        query: >
+          CHANGE MASTER TO
+            MASTER_HOST='db-master',
+            MASTER_USER='{{ replication_user }}',
+            MASTER_PASSWORD='{{ replication_pass }}',
+            MASTER_LOG_FILE='{{ log_file }}',
+            MASTER_LOG_POS={{ log_pos }};
+
+    - name: Start slave on replica
+      community.mysql.mysql_query:
+        login_user: root
+        login_password: "{{ db_root_password }}"
+        login_host: 127.0.0.1
+        login_port: 3307
+        query: START SLAVE;
+
+    # 4. Тестирование репликации
+    - name: Create schema in master
+      community.mysql.mysql_db:
+        name: testdatab
+        login_user: root
+        login_password: "{{ db_root_password }}"
+        login_host: 127.0.0.1
+        login_port: 3306
+
+    - name: Create table in master
+      community.mysql.mysql_query:
+        login_user: root
+        login_password: "{{ db_root_password }}"
+        login_host: 127.0.0.1
+        login_port: 3306
+        query: >
+          CREATE TABLE IF NOT EXISTS testdatab.test_table (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            text VARCHAR(255),
+            text2 VARCHAR(255)
+          );
+
+    - name: Insert data in master
+      community.mysql.mysql_query:
+        login_user: root
+        login_password: "{{ db_root_password }}"
+        login_host: 127.0.0.1
+        login_port: 3306
+        query: |
+          INSERT INTO testdatab.test_table (text, text2) VALUES
+          ('test1', 'test1'),
+          ('test2', 'test2'),
+          ('test3', 'atutnetest3');
+
+    - name: Wait for replication sync
+      pause:
+        seconds: 10
+
+    - name: Stop master container
+      community.docker.docker_container:
+        name: wordpress_db-master
+        state: stopped
+
+    - name: Query replica data
+      community.mysql.mysql_query:
+        login_user: root
+        login_password: "{{ db_root_password }}"
+        login_host: 127.0.0.1
+        login_port: 3307
+        query: SELECT * FROM testdatab.test_table;
+      register: replica_data
+
+    - name: Display replica data
+      debug:
+        var: replica_data.query_result
+
+    - name: Start master container
+      community.docker.docker_container:
+        name: wordpress_db-master
+        state: started
+
+    # 5. Очистка тестовых данных
+    - name: Delete data from master
+      community.mysql.mysql_query:
+        login_user: root
+        login_password: "{{ db_root_password }}"
+        login_host: 127.0.0.1
+        login_port: 3306
+        query: DELETE FROM testdatab.test_table;
+
+    - name: Wait for replication sync (after cleanup)
+      pause:
+        seconds: 10
+
+    - name: Query replica after delete
+      community.mysql.mysql_query:
+        login_user: root
+        login_password: "{{ db_root_password }}"
+        login_host: 127.0.0.1
+        login_port: 3307
+        query: SELECT * FROM testdatab.test_table;
+      register: replica_data_after_delete
+
+    - name: Display data from replica after deletion
+      debug:
+        var: replica_data_after_delete.query_result

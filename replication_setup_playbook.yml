@@ -1,0 +1,114 @@
+- name: MySQL replica with Docker (cleaned and corrected)
+  hosts: wordpress_server
+  become: true
+
+  vars:
+    db_root_password: root_pass
+    replication_user: repl_user
+    replication_pass: repl_pass
+    wordpress_db: wordpress
+    wordpress_user: wp_user
+    wordpress_pass: wp_pass
+    wordpress_port: 8080
+
+  tasks:
+    - name: Stop all docker containers
+      community.docker.docker_compose_v2:
+        project_src: /opt/wordpress
+        state: absent
+
+    - name: Create WordPress project directory
+      file:
+        path: /opt/wordpress
+        state: directory
+
+    - name: Copy docker-compose file
+      copy:
+        dest: /opt/wordpress/docker-compose.yml
+        content: |
+          version: '3.8'
+          services:
+            db-master:
+              container_name: wordpress_db-master
+              image: mysql:5.7
+              restart: always
+              environment:
+                MYSQL_ROOT_PASSWORD: {{ db_root_password }}
+              volumes:
+                - db_master_data:/var/lib/mysql
+              ports:
+                - "3306:3306"
+              command: >
+                --server-id=1
+                --log-bin=mysql-bin
+                --gtid-mode=OFF
+              healthcheck:
+                test: ["CMD", "mysqladmin", "ping", "-uroot", "-p{{ db_root_password }}"]
+                interval: 10s
+                timeout: 5s
+                retries: 5
+
+            db-replica:
+              container_name: wordpress_db-replica
+              image: mysql:5.7
+              restart: always
+              environment:
+                MYSQL_ROOT_PASSWORD: {{ db_root_password }}
+              volumes:
+                - db_replica_data:/var/lib/mysql
+              depends_on:
+                - db-master
+              command: >
+                --server-id=2
+                --relay-log=relay-log
+                --log-bin=mysql-bin
+                --read-only=1
+              healthcheck:
+                test: ["CMD", "mysqladmin", "ping", "-uroot", "-p{{ db_root_password }}"]
+                interval: 10s
+                timeout: 5s
+                retries: 5
+              ports:
+                - "3307:3306"
+
+            wordpress:
+              container_name: wordpress
+              image: wordpress:latest
+              restart: always
+              depends_on:
+                - db-master
+              ports:
+                - "{{ wordpress_port }}:80"
+              environment:
+                WORDPRESS_DB_HOST: db-master:3306
+                WORDPRESS_DB_NAME: {{ wordpress_db }}
+                WORDPRESS_DB_USER: {{ wordpress_user }}
+                WORDPRESS_DB_PASSWORD: {{ wordpress_pass }}
+              volumes:
+                - wordpress_data:/var/www/html
+
+          volumes:
+            db_master_data:
+            db_replica_data:
+            wordpress_data:
+
+    - name: Start all containers
+      community.docker.docker_compose_v2:
+        project_src: /opt/wordpress
+        state: present
+
+    - name: Wait for db-master to become healthy
+      community.docker.docker_container_info:
+        name: wordpress_db-master
+      register: master_info
+      until: master_info.container.State.Health is defined and master_info.container.State.Health.Status == "healthy"
+      retries: 10
+      delay: 5
+
+    - name: Wait for db-replica to become healthy
+      community.docker.docker_container_info:
+        name: wordpress_db-replica
+      register: replica_info
+      until: replica_info.container.State.Health is defined and replica_info.container.State.Health.Status == "healthy"
+      retries: 10
+      delay: 5

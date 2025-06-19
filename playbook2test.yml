@@ -1,3 +1,4 @@
+---
 - name: Test MySQL replica
   hosts: wordpress_server
   become: true
@@ -13,6 +14,7 @@
         login_password: "{{ db_root_password }}"
         login_host: 127.0.0.1
         login_port: 3306
+        state: present
 
     - name: Create table in master
       community.mysql.mysql_query:
@@ -39,40 +41,29 @@
           ('test2', 'test2'),
           ('test3', 'atutnetest3');
 
-    - name: Get data from master
-      shell: docker exec wordpress_db-master mysql -uroot -p{{ db_root_password }} -e "SELECT * FROM testdatab.test_table;"
-      register: db_master_output
-
-    - name: Show data from master
-      debug:
-        var: db_master_output.stdout_lines
-
-    - name: Wait for sync
+    - name: Wait for replication sync
       pause:
         seconds: 10
 
-    - name: Stop master
-      shell: docker stop wordpress_db-master
+    - name: Stop master container
+      community.docker.docker_container:
+        name: wordpress_db-master
+        state: stopped
 
-    - name: Get data from replica
-      shell: docker exec wordpress_db-replica mysql -uroot -p{{ db_root_password }} -e "SELECT * FROM testdatab.test_table;"
-      register: db_replica_output
+    - name: Query replica data
+      community.mysql.mysql_query:
+        login_user: root
+        login_password: "{{ db_root_password }}"
+        login_host: 127.0.0.1
+        login_port: 3307
+        query: SELECT * FROM testdatab.test_table;
+      register: replica_data
 
-    - name: Show data from replica
+    - name: Display replica data
       debug:
-        var: db_replica_output.stdout_lines
+        var: replica_data.query_result
 
-    - name: Start master
-      shell: docker start wordpress_db-master
-
-    - name: Wait for master to be started
-      pause:
-        seconds: 15
-
-    - name: Check master status and take data
-      shell: docker exec wordpress_db-master mysql -uroot -p{{ db_root_password }} -e "SELECT * FROM testdatab.test_table;"
-      register: db_master_after_restart
-
-    - name: Display master again
-      debug:
-        var: db_master_after_restart.stdout_lines
+    - name: Start master container
+      community.docker.docker_container:
+        name: wordpress_db-master
+        state: started

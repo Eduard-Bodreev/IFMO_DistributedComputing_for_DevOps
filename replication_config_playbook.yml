@@ -1,0 +1,99 @@
+---
+- name: Configure MySQL replication between master and replica
+  hosts: wordpress_server
+  become: true
+
+  vars:
+    db_root_password: root_pass
+    replication_user: replicauser
+    replication_pass: replicapassword
+
+  tasks:
+    - name: Create replication user
+      community.mysql.mysql_query:
+        login_host: 127.0.0.1
+        login_user: root
+        login_password: "{{ db_root_password }}"
+        login_port: 3306
+        login_unix_socket: ""
+        query: "CREATE USER IF NOT EXISTS '{{ replication_user }}'@'%' IDENTIFIED BY '{{ replication_pass }}';"
+
+    - name: Grant replication privilege
+      community.mysql.mysql_query:
+        login_host: 127.0.0.1
+        login_user: root
+        login_password: "{{ db_root_password }}"
+        login_port: 3306
+        login_unix_socket: ""
+        query: "GRANT REPLICATION SLAVE ON *.* TO '{{ replication_user }}'@'%';"
+
+    - name: Flush privileges
+      community.mysql.mysql_query:
+        login_host: 127.0.0.1
+        login_user: root
+        login_password: "{{ db_root_password }}"
+        login_port: 3306
+        login_unix_socket: ""
+        query: "FLUSH PRIVILEGES;"
+
+    - name: Get master log file and position
+      community.mysql.mysql_query:
+        login_host: 127.0.0.1
+        login_user: root
+        login_password: "{{ db_root_password }}"
+        login_port: 3306
+        login_unix_socket: ""
+        query: SHOW MASTER STATUS
+      register: master_status
+
+    - name: Extract log file and position
+      set_fact:
+        master_log_file: "{{ master_status.query_result[0][0].File }}"
+        master_log_pos: "{{ master_status.query_result[0][0].Position | int }}"
+
+    - name: Stop slave on replica
+      community.mysql.mysql_query:
+        login_host: 127.0.0.1
+        login_port: 3307
+        login_user: root
+        login_password: "{{ db_root_password }}"
+        login_unix_socket: ""
+        query: "STOP SLAVE;"
+
+    - name: Configure replica connection to master
+      community.mysql.mysql_query:
+        login_host: 127.0.0.1
+        login_port: 3307
+        login_user: root
+        login_password: "{{ db_root_password }}"
+        login_unix_socket: ""
+        query: >
+          CHANGE MASTER TO
+            MASTER_HOST='db-master',
+            MASTER_USER='{{ replication_user }}',
+            MASTER_PASSWORD='{{ replication_pass }}',
+            MASTER_LOG_FILE='{{ master_log_file }}',
+            MASTER_LOG_POS={{ master_log_pos }};
+
+    - name: Start slave on replica
+      community.mysql.mysql_query:
+        login_host: 127.0.0.1
+        login_port: 3307
+        login_user: root
+        login_password: "{{ db_root_password }}"
+        login_unix_socket: ""
+        query: "START SLAVE;"
+
+    - name: Check replication status
+      community.mysql.mysql_query:
+        login_host: 127.0.0.1
+        login_user: root
+        login_password: "{{ db_root_password }}"
+        login_port: 3307
+        login_unix_socket: ""
+        query: SHOW SLAVE STATUS
+      register: replication_check
+
+    - name: Show replication status
+      debug:
+        var: replication_check.query_result

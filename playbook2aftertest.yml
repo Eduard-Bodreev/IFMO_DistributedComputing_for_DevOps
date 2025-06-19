@@ -1,4 +1,5 @@
-- name: Cleanup test data on master and check replication
+---
+- name: Cleanup test data on master and verify replica
   hosts: wordpress_server
   become: true
 
@@ -6,17 +7,27 @@
     db_root_password: root_pass
 
   tasks:
-    - name: Delete data from master
-      shell: docker exec wordpress_db-master mysql -uroot -p{{ db_root_password }} -e "DELETE FROM testdatab.test_table;"
+    - name: Delete all data from test table on master
+      community.mysql.mysql_query:
+        login_user: root
+        login_password: "{{ db_root_password }}"
+        login_host: 127.0.0.1
+        login_port: 3306
+        query: DELETE FROM testdatab.test_table;
 
-    - name: Wait for sync with replica
-      pause:
-        seconds: 40
+    - name: Wait for replication sync
+      ansible.builtin.pause:
+        seconds: 10
 
-    - name: Replica info after master del
-      shell: docker exec wordpress_db-replica mysql -uroot -p{{ db_root_password }} -e "SELECT * FROM testdatab.test_table;"
-      register: db_replica_after_del_in_master
+    - name: Query replica after deletion
+      community.mysql.mysql_query:
+        login_user: root
+        login_password: "{{ db_root_password }}"
+        login_host: 127.0.0.1
+        login_port: 3307
+        query: SELECT * FROM testdatab.test_table;
+      register: replica_data_after_delete
 
-    - name: Display cleaned replica
-      debug:
-        var: db_replica_after_del_in_master.stdout_lines
+    - name: Display data from replica after deletion
+      ansible.builtin.debug:
+        var: replica_data_after_delete.query_result
