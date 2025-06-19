@@ -99,7 +99,7 @@
             db_replica_data:
 
     - name: Start all containers
-      community.docker.docker_compose:
+      community.docker.docker_compose_v2:
         project_src: /opt/wordpress
         state: present
         remove_orphans: true
