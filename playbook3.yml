@@ -1,4 +1,5 @@
-- name: Install and run monitoring (grafana + prom + cAd)
+---
+- name: Install and run monitoring (Grafana + Prometheus + cAdvisor)
   hosts: all
   become: true
 
@@ -13,21 +14,16 @@
     grafana_dashboard_json: /tmp/dashboard.json
 
   tasks:
-    - name: Monitoring directory
+    - name: Ensure monitoring directory exists
       file:
         path: "{{ monitor_dir }}"
         state: directory
         mode: '0755'
 
-    - name: Install docker-compose v2 manually
-      get_url:
-        url: https://github.com/docker/compose/releases/download/v2.24.6/docker-compose-linux-x86_64
-        dest: /usr/local/bin/docker-compose
-        mode: '0755'
-
     - name: Add Prometheus config
       copy:
         dest: "{{ monitor_dir }}/prometheus.yml"
+        mode: '0644'
         content: |
           global:
             scrape_interval: 10s
@@ -35,9 +31,17 @@
             - job_name: 'cadvisor'
               static_configs:
                 - targets: ['cadvisor:8080']
-        mode: '0644'
 
-    - name: Docker-compose.yml for monitoring
+    - name: Deploy monitoring stack with Docker Compose
+      community.docker.docker_compose:
+        project_src: "{{ monitor_dir }}"
+        files:
+          - docker-compose.yml
+        state: present
+        restarted: true
+        remove_orphans: true
+
+    - name: Create docker-compose.yml for monitoring
       copy:
         dest: "{{ monitor_dir }}/docker-compose.yml"
         mode: '0644'
@@ -84,9 +88,6 @@
           networks:
             monitor_net:
 
-    - name: Start monitoring manually with docker-compose
-      command: /usr/local/bin/docker-compose -f {{ monitor_dir }}/docker-compose.yml up -d
-
     - name: Wait for Grafana to be ready
       uri:
         url: "http://localhost:{{ grafana_port }}"
@@ -115,7 +116,7 @@
         dest: "{{ grafana_dashboard_json }}"
         mode: '0644'
 
-    - name: Read dashboard
+    - name: Read dashboard content
       slurp:
         src: "{{ grafana_dashboard_json }}"
       register: dashboard_json
@@ -139,6 +140,6 @@
               value: "DS_PROMETHEUS"
           overwrite: true
 
-    - name: Final information
+    - name: Final info message
       debug:
-        msg: "Everything is good, you can watch metrics at http://{{ ansible_host }}:{{ grafana_port }}"
+        msg: "Grafana is ready at http://{{ ansible_host }}:{{ grafana_port }}"
