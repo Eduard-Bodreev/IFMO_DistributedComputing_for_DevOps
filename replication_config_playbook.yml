@@ -9,6 +9,11 @@
     replication_pass: replicapassword
 
   tasks:
+    - name: Ensure PyMySQL is installed via apt
+      apt:
+        name: python3-pymysql
+        state: present
+
     - name: Create replication user
       community.mysql.mysql_query:
         login_host: 127.0.0.1

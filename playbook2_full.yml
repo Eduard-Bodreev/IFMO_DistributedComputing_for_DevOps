@@ -121,6 +121,12 @@
       delay: 5
 
     # 3. Настройка репликации
+    - name: Ensure PyMySQL is installed via apt
+      apt:
+        name: python3-pymysql
+        state: present
+      become: true
+
     - name: Wait until master MySQL is ready
       community.mysql.mysql_info:
         login_user: root
