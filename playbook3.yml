@@ -1,5 +1,5 @@
 ---
-- name: Install and run monitoring (Grafana + Prometheus + cAdvisor)
+- name: Lab 3 — Monitoring with Prometheus, Grafana, and cAdvisor
   hosts: all
   become: true
 
@@ -14,13 +14,28 @@
     grafana_dashboard_json: /tmp/dashboard.json
 
   tasks:
+    - name: Ensure required packages are installed
+      apt:
+        name: ['python3-pip']
+        state: present
+        update_cache: yes
+
+    - name: Install required Python libraries for Ansible modules
+      apt:
+        name:
+          - python3-docker
+          - python3-requests
+        state: present
+        update_cache: yes
+
+
     - name: Ensure monitoring directory exists
       file:
         path: "{{ monitor_dir }}"
         state: directory
         mode: '0755'
 
-    - name: Add Prometheus config
+    - name: Create Prometheus config file
       copy:
         dest: "{{ monitor_dir }}/prometheus.yml"
         mode: '0644'
@@ -32,16 +47,7 @@
               static_configs:
                 - targets: ['cadvisor:8080']
 
-    - name: Deploy monitoring stack with Docker Compose
-      community.docker.docker_compose:
-        project_src: "{{ monitor_dir }}"
-        files:
-          - docker-compose.yml
-        state: present
-        restarted: true
-        remove_orphans: true
-
-    - name: Create docker-compose.yml for monitoring
+    - name: Create docker-compose file for monitoring stack
       copy:
         dest: "{{ monitor_dir }}/docker-compose.yml"
         mode: '0644'
@@ -88,6 +94,12 @@
           networks:
             monitor_net:
 
+    - name: Deploy monitoring stack using docker_compose
+      community.docker.docker_compose:
+        project_src: "{{ monitor_dir }}"
+        state: present
+        remove_orphans: true
+
     - name: Wait for Grafana to be ready
       uri:
         url: "http://localhost:{{ grafana_port }}"
@@ -98,7 +110,7 @@
       delay: 5
       until: grafana_status.status == 200
 
-    - name: Add Prometheus source for Grafana
+    - name: Add Prometheus as Grafana datasource
       community.grafana.grafana_datasource:
         name: DS_PROMETHEUS
         ds_type: prometheus
@@ -110,18 +122,18 @@
         grafana_user: "{{ grafana_user }}"
         grafana_password: "{{ grafana_password }}"
 
-    - name: Download Grafana dashboard
+    - name: Download Grafana dashboard JSON
       get_url:
         url: "https://grafana.com/api/dashboards/{{ grafana_dashboard_id }}/revisions/1/download"
         dest: "{{ grafana_dashboard_json }}"
         mode: '0644'
 
-    - name: Read dashboard content
+    - name: Read dashboard content from file
       slurp:
         src: "{{ grafana_dashboard_json }}"
       register: dashboard_json
 
-    - name: Import dashboard in Grafana
+    - name: Import dashboard into Grafana
       uri:
         url: "http://localhost:{{ grafana_port }}/api/dashboards/import"
         method: POST
@@ -142,4 +154,4 @@
 
     - name: Final info message
       debug:
-        msg: "Grafana is ready at http://{{ ansible_host }}:{{ grafana_port }}"
+        msg: "Grafana доступна по адресу: http://{{ ansible_host }}:{{ grafana_port }}"
