@@ -14,21 +14,48 @@
     grafana_dashboard_json: /tmp/dashboard.json
 
   tasks:
-    - name: Ensure required packages are installed
+    # 1. Установка Docker, как в ЛР2
+    - name: Install required base packages
       apt:
-        name: ['python3-pip']
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg
+          - software-properties-common
         state: present
         update_cache: yes
 
-    - name: Install required Python libraries for Ansible modules
+    - name: Add Docker GPG key
+      apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+
+    - name: Add Docker APT repository
+      apt_repository:
+        repo: deb [arch=amd64] https://download.docker.com/linux/ubuntu focal stable
+        state: present
+        update_cache: yes
+
+    - name: Install Docker CE and Compose plugin
       apt:
         name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-compose-plugin
+          - python3-pip
           - python3-docker
           - python3-requests
         state: present
-        update_cache: yes
 
+    - name: Ensure Docker service is running
+      service:
+        name: docker
+        state: started
+        enabled: true
 
+    # 2. Monitoring stack
     - name: Ensure monitoring directory exists
       file:
         path: "{{ monitor_dir }}"
@@ -94,8 +121,8 @@
           networks:
             monitor_net:
 
-    - name: Deploy monitoring stack using docker_compose
-      community.docker.docker_compose:
+    - name: Deploy monitoring stack using docker_compose_v2
+      community.docker.docker_compose_v2:
         project_src: "{{ monitor_dir }}"
         state: present
         remove_orphans: true
@@ -110,6 +137,7 @@
       delay: 5
       until: grafana_status.status == 200
 
+    # 3. Добавление Prometheus в Grafana
     - name: Add Prometheus as Grafana datasource
       community.grafana.grafana_datasource:
         name: DS_PROMETHEUS
@@ -122,6 +150,7 @@
         grafana_user: "{{ grafana_user }}"
         grafana_password: "{{ grafana_password }}"
 
+    # 4. Дашборд Grafana
     - name: Download Grafana dashboard JSON
       get_url:
         url: "https://grafana.com/api/dashboards/{{ grafana_dashboard_id }}/revisions/1/download"

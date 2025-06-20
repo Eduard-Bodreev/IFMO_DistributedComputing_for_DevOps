@@ -1,4 +1,5 @@
-- name: Test MySQL replica
+---
+- name: Cleanup test data on master and verify replica
   hosts: wordpress_server
   become: true
 
@@ -6,73 +7,27 @@
     db_root_password: root_pass
 
   tasks:
-    - name: Create schema in master
-      community.mysql.mysql_db:
-        name: testdatab
-        login_user: root
-        login_password: "{{ db_root_password }}"
-        login_host: 127.0.0.1
-        login_port: 3306
-
-    - name: Create table in master
+    - name: Delete all data from test table on master
       community.mysql.mysql_query:
         login_user: root
         login_password: "{{ db_root_password }}"
         login_host: 127.0.0.1
         login_port: 3306
-        query: >
-          CREATE TABLE IF NOT EXISTS testdatab.test_table (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            text VARCHAR(255),
-            text2 VARCHAR(255)
-          );
+        query: DELETE FROM testdatab.test_table;
 
-    - name: Insert data in master
-      community.mysql.mysql_query:
-        login_user: root
-        login_password: "{{ db_root_password }}"
-        login_host: 127.0.0.1
-        login_port: 3306
-        query: |
-          INSERT INTO testdatab.test_table (text, text2) VALUES
-          ('test1', 'test1'),
-          ('test2', 'test2'),
-          ('test3', 'atutnetest3');
-
-    - name: Get data from master
-      shell: docker exec wordpress_db-master mysql -uroot -p{{ db_root_password }} -e "SELECT * FROM testdatab.test_table;"
-      register: db_master_output
-
-    - name: Show data from master
-      debug:
-        var: db_master_output.stdout_lines
-
-    - name: Wait for sync
-      pause:
+    - name: Wait for replication sync
+      ansible.builtin.pause:
         seconds: 10
 
-    - name: Stop master
-      shell: docker stop wordpress_db-master
+    - name: Query replica after deletion
+      community.mysql.mysql_query:
+        login_user: root
+        login_password: "{{ db_root_password }}"
+        login_host: 127.0.0.1
+        login_port: 3307
+        query: SELECT * FROM testdatab.test_table;
+      register: replica_data_after_delete
 
-    - name: Get data from replica
-      shell: docker exec wordpress_db-replica mysql -uroot -p{{ db_root_password }} -e "SELECT * FROM testdatab.test_table;"
-      register: db_replica_output
-
-    - name: Show data from replica
-      debug:
-        var: db_replica_output.stdout_lines
-
-    - name: Start master
-      shell: docker start wordpress_db-master
-
-    - name: Wait for master to be started
-      pause:
-        seconds: 15
-
-    - name: Check master status and take data
-      shell: docker exec wordpress_db-master mysql -uroot -p{{ db_root_password }} -e "SELECT * FROM testdatab.test_table;"
-      register: db_master_after_restart
-
-    - name: Display master again
-      debug:
-        var: db_master_after_restart.stdout_lines
+    - name: Display data from replica after deletion
+      ansible.builtin.debug:
+        var: replica_data_after_delete.query_result
